@@ -71,14 +71,31 @@
   // ════════════════════════════════════════════════════
   let visSess = null;
 
-  function bootVisitor() {
+  async function bootVisitor() {
     document.getElementById("visitor-view").style.display = "flex";
-    document.getElementById("pw-gate").style.display      = "flex";
-    document.getElementById("chat-view").style.display    = "none";
     document.getElementById("gate-submit").addEventListener("click", doGate);
     document.getElementById("gate-input").addEventListener("keydown", e => {
       if (e.key === "Enter") doGate();
     });
+
+    // Try to auto-rejoin a previous session (survives reloads / in-app browser redirects)
+    const saved = localStorage.getItem("haic_vis_sess");
+    if (saved) {
+      try {
+        const snap = await get(ref(db, "sessions/" + saved));
+        if (snap.exists()) {
+          visSess = saved;
+          document.getElementById("pw-gate").style.display   = "none";
+          document.getElementById("chat-view").style.display = "flex";
+          listenVisitor();
+          return;
+        } else {
+          localStorage.removeItem("haic_vis_sess");
+        }
+      } catch (e) { /* fall through to gate */ }
+    }
+    document.getElementById("pw-gate").style.display   = "flex";
+    document.getElementById("chat-view").style.display = "none";
   }
 
   async function doGate() {
@@ -88,14 +105,15 @@
     const all  = snap.val() || {};
     let found  = null;
     for (const [id, s] of Object.entries(all)) {
-      if (s.guestCode === code && !s.guestJoined) { found = id; break; }
+      if (s.guestCode === code) { found = id; break; }
     }
     if (!found) {
-      document.getElementById("gate-err").textContent = "Invalid or already-used code. Ask your host for a new one.";
+      document.getElementById("gate-err").textContent = "Invalid code. Ask your host for a new one.";
       return;
     }
     await update(ref(db, "sessions/" + found), { guestJoined: true, guestJoinedAt: Date.now() });
     visSess = found;
+    localStorage.setItem("haic_vis_sess", found);
     document.getElementById("pw-gate").style.display  = "none";
     document.getElementById("chat-view").style.display = "flex";
     listenVisitor();
