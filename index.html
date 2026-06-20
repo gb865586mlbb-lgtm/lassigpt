@@ -110,11 +110,6 @@
     onValue(ref(db, "sessions/" + visSess + "/typing"), snap => {
       document.getElementById("typing-bubble").style.display = snap.val() ? "block" : "none";
     });
-    onValue(ref(db, "sessions/" + visSess + "/pendingReply"), snap => {
-      const w = !!snap.val();
-      document.getElementById("vis-send").disabled  = w;
-      document.getElementById("vis-input").disabled = w;
-    });
   }
 
   function renderVisMsgs(msgs) {
@@ -195,6 +190,17 @@
     toast("Session created! Code: " + code);
   };
 
+  window.deleteSession = async function(id) {
+    if (!confirm("Delete this session? This can't be undone.")) return;
+    await set(ref(db, "sessions/" + id), null);
+    if (activeSess === id) {
+      activeSess = null;
+      document.getElementById("admin-empty").style.display     = "flex";
+      document.getElementById("admin-chat-area").style.display = "none";
+    }
+    toast("Session deleted");
+  };
+
   function renderSidebar() {
     const list = document.getElementById("sessions-list");
     const entries = Object.entries(allSess);
@@ -209,11 +215,18 @@
       const div   = document.createElement("div");
       div.className = "sess-item" + (id === activeSess ? " selected" : "");
       div.innerHTML = `
-        <div class="sess-name">${s.pendingReply ? '<span class="badge"></span>' : ""}
-          ${s.guestJoined ? "🟢" : "🔴"} Session ···${id.slice(-5)}</div>
+        <div class="sess-row-top">
+          <div class="sess-name">${s.pendingReply ? '<span class="badge"></span>' : ""}
+            ${s.guestJoined ? "🟢" : "🔴"} Session ···${id.slice(-5)}</div>
+          <button class="del-btn" title="Delete session">✕</button>
+        </div>
         <div class="sess-code">Code: <b>${s.guestCode}</b></div>
         <div class="sess-preview">${last ? esc(last.text.slice(0,46)) + (last.text.length > 46 ? "…" : "") : s.guestJoined ? "Waiting…" : "Guest hasn't joined yet"}</div>`;
       div.onclick = () => pickSession(id);
+      div.querySelector(".del-btn").onclick = (e) => {
+        e.stopPropagation();
+        deleteSession(id);
+      };
       list.appendChild(div);
     });
   }
@@ -374,7 +387,10 @@ textarea::placeholder{color:var(--dm);}
 .no-sess{padding:24px 14px;font-size:12px;color:var(--mt);text-align:center;line-height:1.7;}
 .sess-item{padding:10px 12px;border-radius:9px;cursor:pointer;margin-bottom:5px;border:1px solid transparent;transition:background .1s;}
 .sess-item:hover{background:var(--s2);}.sess-item.selected{background:var(--ad);border-color:var(--ac);}
-.sess-name{font-size:13px;font-weight:500;margin-bottom:2px;display:flex;align-items:center;gap:5px;}
+.sess-row-top{display:flex;align-items:center;gap:6px;}
+.sess-name{font-size:13px;font-weight:500;margin-bottom:2px;display:flex;align-items:center;gap:5px;flex:1;min-width:0;}
+.del-btn{font-family:inherit;font-size:12px;width:20px;height:20px;border-radius:5px;border:1px solid transparent;background:transparent;color:var(--mt);cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .15s;}
+.del-btn:hover{background:var(--rd);color:#fff;border-color:var(--rd);}
 .badge{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ac);flex-shrink:0;}
 .sess-code{font-size:11px;color:var(--ac);margin-bottom:2px;font-weight:600;letter-spacing:.05em;}
 .sess-preview{font-size:11px;color:var(--mt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
