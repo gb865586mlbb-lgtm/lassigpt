@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Assistant</title>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getDatabase, ref, set, get, push, onValue, update, serverTimestamp }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+  // =====================================================
+  //  STEP 1: Paste your Firebase config here
+  //  Get it from: console.firebase.google.com
+  //  Project > Add Web App > copy firebaseConfig
+  // =====================================================
+  const firebaseConfig = {
+    apiKey:            "AIzaSyApqFxU2ULAOxKjE_40xroEO7DKVxRiSW0",
+    authDomain:        "prank-572a0.firebaseapp.com",
+    databaseURL:       "https://prank-572a0-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId:         "prank-572a0",
+    storageBucket:     "prank-572a0.firebasestorage.app",
+    messagingSenderId: "1004036578240",
+    appId:             "1:1004036578240:web:5d702d7f41dd4f18114625"
+  };
+  // =====================================================
+
+  const app = initializeApp(firebaseConfig);
+  const db  = getDatabase(app);
+
+  // ── helpers ──────────────────────────────────────────
+  function genCode() {
+    const c = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let s = "";
+    for (let i = 0; i < 6; i++) s += c[Math.floor(Math.random() * c.length)];
+    return s;
+  }
+  function fmt(ts) {
+    if (!ts) return "";
+    return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  function esc(s) {
+    return String(s)
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+      .replace(/"/g,"&quot;").replace(/\n/g,"<br>");
+  }
+  function toast(msg) {
+    const t = document.getElementById("toast");
+    t.textContent = msg;
+    t.classList.add("show");
+    setTimeout(() => t.classList.remove("show"), 2200);
+  }
+  function resize(el) {
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 140) + "px";
+  }
+  window.autoResizeEl = resize;
+
+  // ── decide: admin or visitor ──────────────────────────
+  const IS_ADMIN = new URLSearchParams(location.search).get("admin") === "1";
+  const ADM_PW_KEY = "haic_adm_pw";
+  const getAdmPw   = () => localStorage.getItem(ADM_PW_KEY) || "admin123";
+
+  window.addEventListener("DOMContentLoaded", () => {
+    IS_ADMIN ? bootAdmin() : bootVisitor();
+  });
+
+  // ════════════════════════════════════════════════════
+  //  VISITOR
+  // ════════════════════════════════════════════════════
+  let visSess = null;
+
+  function bootVisitor() {
+    document.getElementById("visitor-view").style.display = "flex";
+    document.getElementById("pw-gate").style.display      = "flex";
+    document.getElementById("chat-view").style.display    = "none";
+    document.getElementById("gate-submit").addEventListener("click", doGate);
+    document.getElementById("gate-input").addEventListener("keydown", e => {
+      if (e.key === "Enter") doGate();
+    });
+  }
+
+  async function doGate() {
+    const code = document.getElementById("gate-input").value.trim().toUpperCase();
+    if (!code) return;
+    const snap = await get(ref(db, "sessions"));
+    const all  = snap.val() || {};
+    let found  = null;
+    for (const [id, s] of Object.entries(all)) {
+      if (s.guestCode === code && !s.guestJoined) { found = id; break; }
+    }
+    if (!found) {
+      document.getElementById("gate-err").textContent = "Invalid or already-used code. Ask your host for a new one.";
+      return;
+    }
+    await update(ref(db, "sessions/" + found), { guestJoined: true, guestJoinedAt: Date.now() });
+    visSess = found;
+    document.getElementById("pw-gate").style.display  = "none";
+    document.getElementById("chat-view").style.display = "flex";
+    listenVisitor();
+  }
+
+  function listenVisitor() {
+    onValue(ref(db, "sessions/" + visSess + "/messages"), snap => {
+      const msgs = [];
+      snap.forEach(c => msgs.push({ ...c.val() }));
+      renderVisMsgs(msgs);
+    });
+    onValue(ref(db, "sessions/" + visSess + "/typing"), snap => {
+      document.getElementById("typing-bubble").style.display = snap.val() ? "block" : "none";
+    });
+    onValue(ref(db, "sessions/" + visSess + "/pendingReply"), snap => {
+      const w = !!snap.val();
+      document.getElementById("vis-send").disabled  = w;
+      document.getElementById("vis-input").disabled = w;
+    });
+  }
+
+  function renderVisMsgs(msgs) {
+    const box  = document.getElementById("chat-messages");
+    const atBtm = box.scrollTop + box.clientHeight >= box.scrollHeight - 50;
+    box.innerHTML = "";
+    if (!msgs.length) {
+      box.innerHTML = `<div class="empty-hint">
+        <svg width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.4" viewBox="0 0 24 24">
+          <path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+        </svg><p>Send a message to start</p></div>`;
+      return;
+    }
+    msgs.forEach(m => {
+      const d = document.createElement("div");
+      d.className = "msg " + (m.role === "user" ? "user" : "ai");
+      d.innerHTML = `<div class="avatar ${m.role === "user" ? "av-user" : "av-ai"}">${m.role === "user" ? "Y" : "A"}</div>
+        <div><div class="bubble">${esc(m.text)}</div><div class="msg-time">${fmt(m.ts)}</div></div>`;
+      box.appendChild(d);
+    });
+    if (atBtm) box.scrollTop = box.scrollHeight;
+  }
+
+  window._sendVis = async function() {
+    const inp  = document.getElementById("vis-input");
+    const text = inp.value.trim();
+    if (!text || !visSess) return;
+    await push(ref(db, "sessions/" + visSess + "/messages"), { role: "user", text, ts: Date.now() });
+    await update(ref(db, "sessions/" + visSess), { pendingReply: true });
+    inp.value = "";
+    resize(inp);
+  };
+  window._visKey = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); window._sendVis(); } };
+
+  // ════════════════════════════════════════════════════
+  //  ADMIN
+  // ════════════════════════════════════════════════════
+  let admAuthed = false;
+  let activeSess = null;
+  let allSess    = {};
+
+  function bootAdmin() {
+    document.getElementById("admin-wrap").style.display = "flex";
+    document.getElementById("login-overlay").style.display = "flex";
+    document.getElementById("adm-pw-inp").addEventListener("keydown", e => {
+      if (e.key === "Enter") window.tryLogin();
+    });
+  }
+
+  window.tryLogin = function() {
+    const pw = document.getElementById("adm-pw-inp").value;
+    if (pw === getAdmPw()) {
+      document.getElementById("login-overlay").style.display = "none";
+      admAuthed = true;
+      initAdmin();
+    } else {
+      document.getElementById("adm-err").textContent = "Wrong password.";
+    }
+  };
+
+  function initAdmin() {
+    const base = location.origin + location.pathname;
+    document.getElementById("chat-link-val").textContent = base;
+    onValue(ref(db, "sessions"), snap => {
+      allSess = snap.val() || {};
+      renderSidebar();
+      if (activeSess && allSess[activeSess]) renderAdminChat(activeSess);
+    });
+  }
+
+  window.createSession = async function() {
+    const code = genCode();
+    const id   = "sess_" + Date.now();
+    await set(ref(db, "sessions/" + id), {
+      id, guestCode: code, guestJoined: false,
+      pendingReply: false, typing: false, createdAt: Date.now()
+    });
+    toast("Session created! Code: " + code);
+  };
+
+  function renderSidebar() {
+    const list = document.getElementById("sessions-list");
+    const entries = Object.entries(allSess);
+    if (!entries.length) {
+      list.innerHTML = `<div class="no-sess">No sessions yet.<br>Click "+ New Session" to start.</div>`;
+      return;
+    }
+    list.innerHTML = "";
+    entries.sort((a,b) => b[1].createdAt - a[1].createdAt).forEach(([id, s]) => {
+      const msgs  = s.messages ? Object.values(s.messages) : [];
+      const last  = msgs[msgs.length - 1];
+      const div   = document.createElement("div");
+      div.className = "sess-item" + (id === activeSess ? " selected" : "");
+      div.innerHTML = `
+        <div class="sess-name">${s.pendingReply ? '<span class="badge"></span>' : ""}
+          ${s.guestJoined ? "🟢" : "🔴"} Session ···${id.slice(-5)}</div>
+        <div class="sess-code">Code: <b>${s.guestCode}</b></div>
+        <div class="sess-preview">${last ? esc(last.text.slice(0,46)) + (last.text.length > 46 ? "…" : "") : s.guestJoined ? "Waiting…" : "Guest hasn't joined yet"}</div>`;
+      div.onclick = () => pickSession(id);
+      list.appendChild(div);
+    });
+  }
+
+  function pickSession(id) {
+    activeSess = id;
+    const s = allSess[id];
+    document.getElementById("admin-empty").style.display     = "none";
+    document.getElementById("admin-chat-area").style.display = "flex";
+    document.getElementById("act-title").textContent  = "Session ···" + id.slice(-5);
+    document.getElementById("act-code").textContent   = "Guest code: " + s.guestCode;
+    document.getElementById("act-status").textContent = s.guestJoined ? "🟢 Guest connected" : "🔴 Waiting for guest";
+    document.getElementById("typing-cb").checked = s.typing || false;
+    renderAdminChat(id);
+    renderSidebar();
+  }
+
+  function renderAdminChat(id) {
+    const s = allSess[id]; if (!s) return;
+    const msgs = s.messages ? Object.values(s.messages).sort((a,b)=>a.ts-b.ts) : [];
+    const box  = document.getElementById("admin-msgs");
+    const atBtm = box.scrollTop + box.clientHeight >= box.scrollHeight - 50;
+    box.innerHTML = "";
+    if (!msgs.length) {
+      box.innerHTML = `<div style="color:var(--muted);font-size:13px;text-align:center;padding:40px 20px;">No messages yet.</div>`;
+    } else {
+      msgs.forEach(m => {
+        const d = document.createElement("div");
+        d.className = "msg " + (m.role === "user" ? "user" : "ai");
+        d.innerHTML = `<div class="avatar ${m.role==="user"?"av-user":"av-ai"}" title="${m.role==="user"?"Guest":"You"}">${m.role==="user"?"G":"Y"}</div>
+          <div><div class="bubble">${esc(m.text)}</div><div class="msg-time">${fmt(m.ts)}</div></div>`;
+        box.appendChild(d);
+      });
+    }
+    if (s.pendingReply) {
+      const n = document.createElement("div");
+      n.style.cssText = "font-size:12px;color:var(--accent);padding:6px 6px 0 42px;";
+      n.textContent = "⏳ Guest is waiting for your reply…";
+      box.appendChild(n);
+    }
+    if (atBtm) box.scrollTop = box.scrollHeight;
+    // update live status
+    document.getElementById("act-status").textContent = s.guestJoined ? "🟢 Guest connected" : "🔴 Waiting for guest";
+  }
+
+  window.sendAdminReply = async function() {
+    if (!activeSess) return;
+    const inp  = document.getElementById("adm-inp");
+    const text = inp.value.trim();
+    if (!text) return;
+    await push(ref(db, "sessions/" + activeSess + "/messages"), { role: "ai", text, ts: Date.now() });
+    await update(ref(db, "sessions/" + activeSess), { pendingReply: false, typing: false });
+    document.getElementById("typing-cb").checked = false;
+    inp.value = "";
+    resize(inp);
+    toast("Replied ✓");
+  };
+  window.admKey = e => { if (e.key==="Enter"&&!e.shiftKey){e.preventDefault();window.sendAdminReply();} };
+
+  window.toggleTyping = async function(val) {
+    if (!activeSess) return;
+    await update(ref(db, "sessions/" + activeSess), { typing: val });
+  };
+
+  window.copyLink = function() {
+    navigator.clipboard.writeText(location.origin + location.pathname)
+      .then(() => toast("Chat link copied!"));
+  };
+
+  window.updatePw = function() {
+    const v = document.getElementById("new-pw-inp").value.trim();
+    if (v.length < 4) { toast("Too short — min 4 chars"); return; }
+    localStorage.setItem(ADM_PW_KEY, v);
+    document.getElementById("new-pw-inp").value = "";
+    toast("Password updated ✓");
+  };
+<\/script>
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+:root{--bg:#0f0f11;--sf:#18181c;--s2:#222228;--bd:#2a2a32;--ac:#7c6aff;--ad:rgba(124,106,255,.13);--tx:#e8e8f0;--mt:#6b6b80;--dm:#3a3a48;--gr:#34d399;--rd:#f87171;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--tx);height:100vh;overflow:hidden;display:flex;flex-direction:column;}
+
+/* VISITOR */
+#visitor-view{display:none;flex-direction:column;height:100vh;}
+
+/* Gate */
+#pw-gate{display:none;flex:1;align-items:center;justify-content:center;}
+.gate-box{background:var(--sf);border:1px solid var(--bd);border-radius:16px;padding:36px 32px;width:340px;max-width:92vw;}
+.gate-logo{width:46px;height:46px;background:var(--ac);border-radius:13px;display:flex;align-items:center;justify-content:center;font-size:22px;margin-bottom:18px;}
+.gate-title{font-size:20px;font-weight:600;margin-bottom:6px;}
+.gate-sub{font-size:13px;color:var(--mt);margin-bottom:22px;line-height:1.55;}
+.g-label{font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.06em;color:var(--mt);margin-bottom:7px;display:block;}
+.g-inp{width:100%;background:var(--bg);border:1px solid var(--bd);border-radius:9px;padding:12px 14px;color:var(--tx);font-family:inherit;font-size:18px;letter-spacing:.2em;text-transform:uppercase;outline:none;transition:border-color .15s;text-align:center;}
+.g-inp:focus{border-color:var(--ac);}
+.gate-err{font-size:12px;color:var(--rd);margin-top:7px;min-height:16px;}
+.gate-btn{margin-top:14px;width:100%;background:var(--ac);border:none;border-radius:9px;padding:12px;color:#fff;font-family:inherit;font-size:14px;font-weight:500;cursor:pointer;transition:opacity .15s;}
+.gate-btn:hover{opacity:.85;}
+
+/* Chat */
+#chat-view{display:none;flex-direction:column;flex:1;}
+.nav{padding:13px 18px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:9px;background:var(--sf);flex-shrink:0;}
+.ndot{width:8px;height:8px;border-radius:50%;background:var(--gr);box-shadow:0 0 8px var(--gr);animation:pulse 2s infinite;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+.ntitle{font-size:14px;font-weight:500;}
+.nsub{font-size:12px;color:var(--mt);}
+.msgs{flex:1;overflow-y:auto;padding:22px 14px;display:flex;flex-direction:column;gap:14px;scrollbar-width:thin;scrollbar-color:var(--bd) transparent;}
+.msgs::-webkit-scrollbar{width:4px;}.msgs::-webkit-scrollbar-thumb{background:var(--bd);border-radius:2px;}
+.msg{display:flex;gap:9px;max-width:640px;align-self:flex-start;width:100%;}
+.msg.user{align-self:flex-end;flex-direction:row-reverse;}
+.avatar{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0;}
+.av-ai{background:var(--ac);color:#fff;}
+.av-user{background:var(--s2);color:var(--mt);border:1px solid var(--bd);}
+.bubble{padding:9px 13px;border-radius:12px;font-size:14px;line-height:1.6;word-break:break-word;}
+.msg.ai .bubble{background:var(--s2);border:1px solid var(--bd);border-top-left-radius:4px;}
+.msg.user .bubble{background:var(--ad);border:1px solid var(--ac);border-top-right-radius:4px;}
+.msg-time{font-size:10px;color:var(--dm);margin-top:3px;}
+.trow{padding:0 14px 6px;}
+.tind{display:flex;gap:4px;align-items:center;padding:5px 0;}
+.td{width:6px;height:6px;border-radius:50%;background:var(--mt);animation:tb 1.2s infinite;}
+.td:nth-child(2){animation-delay:.2s;}.td:nth-child(3){animation-delay:.4s;}
+@keyframes tb{0%,60%,100%{transform:translateY(0);}30%{transform:translateY(-6px);}}
+.iarea{padding:12px 14px;border-top:1px solid var(--bd);background:var(--sf);display:flex;gap:9px;align-items:flex-end;flex-shrink:0;}
+.iwrap{flex:1;background:var(--bg);border:1px solid var(--bd);border-radius:10px;display:flex;align-items:flex-end;transition:border-color .15s;}
+.iwrap:focus-within{border-color:var(--ac);}
+textarea{flex:1;background:transparent;border:none;outline:none;color:var(--tx);font-family:inherit;font-size:14px;padding:10px 13px;resize:none;min-height:40px;max-height:120px;line-height:1.5;}
+textarea::placeholder{color:var(--dm);}
+.sbtn{width:36px;height:36px;margin:3px;border-radius:8px;border:none;background:var(--ac);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:opacity .15s;}
+.sbtn:hover{opacity:.85;}.sbtn:disabled{opacity:.3;cursor:not-allowed;}
+.empty-hint{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--mt);flex:1;font-size:13px;text-align:center;padding:20px;}
+.empty-hint svg{opacity:.15;margin-bottom:4px;}
+
+/* ADMIN */
+#admin-wrap{display:none;height:100vh;flex-direction:row;}
+#login-overlay{position:fixed;inset:0;background:var(--bg);display:none;align-items:center;justify-content:center;z-index:99;}
+.lbox{background:var(--sf);border:1px solid var(--bd);border-radius:14px;padding:32px;width:310px;}
+.ltitle{font-size:18px;font-weight:600;margin-bottom:4px;}
+.lsub{font-size:13px;color:var(--mt);margin-bottom:22px;}
+.linp{width:100%;background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;color:var(--tx);font-family:inherit;font-size:14px;outline:none;margin-bottom:14px;transition:border-color .15s;}
+.linp:focus{border-color:var(--ac);}
+.lbtn{width:100%;background:var(--ac);border:none;border-radius:8px;padding:10px;color:#fff;font-family:inherit;font-size:14px;font-weight:500;cursor:pointer;}
+.lbtn:hover{opacity:.85;}
+.lerr{font-size:12px;color:var(--rd);margin-top:6px;min-height:14px;}
+
+.aside{width:290px;border-right:1px solid var(--bd);background:var(--sf);display:flex;flex-direction:column;flex-shrink:0;}
+.aside-top{padding:14px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;}
+.aside-top h2{font-size:13px;font-weight:600;}
+.new-btn{margin-left:auto;font-family:inherit;font-size:12px;padding:5px 10px;border-radius:7px;border:1px solid var(--ac);background:var(--ad);color:var(--ac);cursor:pointer;transition:all .15s;white-space:nowrap;}
+.new-btn:hover{background:var(--ac);color:#fff;}
+.link-bar{padding:10px 14px;border-bottom:1px solid var(--bd);background:var(--s2);}
+.lb-label{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--mt);margin-bottom:5px;}
+.lb-row{display:flex;gap:6px;align-items:center;}
+.lb-val{font-size:11px;color:var(--tx);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:monospace;}
+.cpbtn{font-family:inherit;font-size:11px;padding:3px 8px;border-radius:5px;border:1px solid var(--bd);background:transparent;color:var(--mt);cursor:pointer;flex-shrink:0;transition:all .15s;}
+.cpbtn:hover{border-color:var(--ac);color:var(--ac);}
+.slist{flex:1;overflow-y:auto;padding:8px;}
+.no-sess{padding:24px 14px;font-size:12px;color:var(--mt);text-align:center;line-height:1.7;}
+.sess-item{padding:10px 12px;border-radius:9px;cursor:pointer;margin-bottom:5px;border:1px solid transparent;transition:background .1s;}
+.sess-item:hover{background:var(--s2);}.sess-item.selected{background:var(--ad);border-color:var(--ac);}
+.sess-name{font-size:13px;font-weight:500;margin-bottom:2px;display:flex;align-items:center;gap:5px;}
+.badge{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ac);flex-shrink:0;}
+.sess-code{font-size:11px;color:var(--ac);margin-bottom:2px;font-weight:600;letter-spacing:.05em;}
+.sess-preview{font-size:11px;color:var(--mt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.aside-bot{padding:14px;border-top:1px solid var(--bd);}
+.aside-bot label{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--mt);display:block;margin-bottom:5px;}
+
+.amain{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;}
+.ahead{padding:13px 18px;border-bottom:1px solid var(--bd);background:var(--sf);display:flex;align-items:center;gap:12px;flex-shrink:0;}
+.ahead-info{flex:1;min-width:0;}
+.ah-title{font-size:14px;font-weight:500;}
+.ah-sub{font-size:12px;color:var(--mt);}
+.ttog{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mt);white-space:nowrap;}
+.tsw{position:relative;width:36px;height:20px;flex-shrink:0;}
+.tsw input{opacity:0;width:0;height:0;}
+.tsl{position:absolute;inset:0;background:var(--bd);border-radius:20px;cursor:pointer;transition:.2s;}
+.tsl::before{content:'';position:absolute;left:2px;top:2px;width:16px;height:16px;border-radius:50%;background:var(--mt);transition:.2s;}
+.tsw input:checked+.tsl{background:var(--ac);}
+.tsw input:checked+.tsl::before{transform:translateX(16px);background:#fff;}
+#admin-empty{flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;color:var(--mt);}
+#admin-empty svg{opacity:.15;}#admin-empty p{font-size:13px;}
+#admin-chat-area{display:none;flex-direction:column;flex:1;overflow:hidden;}
+#admin-msgs{flex:1;overflow-y:auto;padding:22px 18px;display:flex;flex-direction:column;gap:14px;}
+.arply{padding:12px 18px;border-top:1px solid var(--bd);background:var(--sf);display:flex;gap:9px;align-items:flex-end;flex-shrink:0;}
+
+/* CONFIG NOTICE */
+#cfg{position:fixed;inset:0;background:#0f0f11;display:flex;align-items:center;justify-content:center;z-index:300;padding:20px;}
+.cfg-box{background:#18181c;border:1px solid var(--rd);border-radius:14px;padding:28px;max-width:480px;width:100%;}
+.cfg-box h2{color:var(--rd);font-size:16px;margin-bottom:10px;}
+.cfg-box p{font-size:13px;color:#9999aa;line-height:1.7;margin-bottom:10px;}
+.cfg-box code{display:block;background:#0f0f11;border-radius:7px;padding:10px 12px;font-size:12px;color:var(--ac);margin:6px 0 12px;white-space:pre-wrap;word-break:break-all;}
+.cfg-box a{color:var(--ac);}
+
+.toast{position:fixed;bottom:18px;right:18px;background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:9px 15px;font-size:13px;color:var(--tx);opacity:0;transform:translateY(6px);transition:all .18s;pointer-events:none;z-index:200;}
+.toast.show{opacity:1;transform:translateY(0);}
+
+@media(max-width:600px){.aside{width:210px;}}
+</style>
+</head>
+<body>
+
+<!-- CONFIG NOTICE -->
+<div id="cfg">
+  <div class="cfg-box">
+    <h2>⚠ Firebase setup needed (3 min)</h2>
+    <p><b>1.</b> Go to <a href="https://console.firebase.google.com" target="_blank">console.firebase.google.com</a><br>
+    Create a project → Add a <b>Web app</b> → copy the <code>firebaseConfig</code> object</p>
+    <p><b>2.</b> In the left menu: <b>Realtime Database</b> → Create database → Start in test mode<br>
+    Then go to <b>Rules</b> tab and set:</p>
+    <code>{ "rules": { ".read": true, ".write": true } }</code>
+    <p><b>3.</b> Open this HTML file in any text editor, find <code>const firebaseConfig = {</code> near the top, and replace the placeholder values with your real ones. Save and re-open.</p>
+    <p><b>4.</b> Open the file with <code>?admin=1</code> at the end of the URL for your admin panel. Share the plain URL with your friend.</p>
+    <p style="font-size:11px;color:#555;margin-top:4px;">This notice disappears automatically once a real config is detected.</p>
+  </div>
+</div>
+
+<!-- VISITOR VIEW -->
+<div id="visitor-view">
+  <div id="pw-gate">
+    <div class="gate-box">
+      <div class="gate-logo">🤖</div>
+      <div class="gate-title">AI Assistant</div>
+      <div class="gate-sub">You've been invited to chat with an AI. Enter your access code to continue.</div>
+      <label class="g-label">Access code</label>
+      <input type="text" class="g-inp" id="gate-input" placeholder="XXXXXX" maxlength="6" autocomplete="off" spellcheck="false" />
+      <div class="gate-err" id="gate-err"></div>
+      <button class="gate-btn" id="gate-submit">Enter Chat &rarr;</button>
+    </div>
+  </div>
+  <div id="chat-view">
+    <div class="nav">
+      <div class="ndot"></div>
+      <div class="ntitle">AI Assistant</div>
+      <div class="nsub">&nbsp;&middot; online</div>
+    </div>
+    <div class="msgs" id="chat-messages">
+      <div class="empty-hint">
+        <svg width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.4" viewBox="0 0 24 24">
+          <path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+        </svg>
+        <p>Send a message to start</p>
+      </div>
+    </div>
+    <div class="trow" id="typing-bubble" style="display:none;">
+      <div class="msg ai">
+        <div class="avatar av-ai">A</div>
+        <div class="bubble">
+          <div class="tind"><div class="td"></div><div class="td"></div><div class="td"></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="iarea">
+      <div class="iwrap">
+        <textarea id="vis-input" placeholder="Message AI Assistant&hellip;" rows="1"
+          onkeydown="_visKey(event)" oninput="autoResizeEl(this)"></textarea>
+      </div>
+      <button class="sbtn" id="vis-send" onclick="_sendVis()">
+        <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ADMIN VIEW -->
+<div id="admin-wrap">
+  <div id="login-overlay">
+    <div class="lbox">
+      <div class="ltitle">Admin Panel</div>
+      <div class="lsub">Sign in to manage your prank sessions</div>
+      <input type="password" class="linp" id="adm-pw-inp" placeholder="Password" />
+      <div class="lerr" id="adm-err"></div>
+      <button class="lbtn" onclick="tryLogin()">Sign in</button>
+    </div>
+  </div>
+
+  <div class="aside">
+    <div class="aside-top">
+      <h2>Sessions</h2>
+      <button class="new-btn" onclick="createSession()">+ New Session</button>
+    </div>
+    <div class="link-bar">
+      <div class="lb-label">Chat link — send to your friend</div>
+      <div class="lb-row">
+        <div class="lb-val" id="chat-link-val">—</div>
+        <button class="cpbtn" onclick="copyLink()">Copy</button>
+      </div>
+    </div>
+    <div class="slist" id="sessions-list">
+      <div class="no-sess">No sessions yet.<br>Click "+ New Session".</div>
+    </div>
+    <div class="aside-bot">
+      <label>Change admin password</label>
+      <div style="display:flex;gap:6px;">
+        <input type="password" class="linp" id="new-pw-inp" placeholder="New password&hellip;"
+          style="margin-bottom:0;font-size:12px;padding:7px 10px;" />
+        <button class="lbtn" onclick="updatePw()" style="padding:7px 12px;font-size:12px;width:auto;">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="amain">
+    <div id="admin-empty">
+      <svg width="48" height="48" fill="none" stroke="currentColor" stroke-width="1" viewBox="0 0 24 24">
+        <path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+      </svg>
+      <p>Select a session from the sidebar</p>
+    </div>
+
+    <div id="admin-chat-area">
+      <div class="ahead">
+        <div class="ahead-info">
+          <div class="ah-title" id="act-title">—</div>
+          <div class="ah-sub">
+            <span id="act-code">—</span>&nbsp;&middot;&nbsp;<span id="act-status">—</span>
+          </div>
+        </div>
+        <div class="ttog">
+          <span>Show typing&hellip;</span>
+          <label class="tsw">
+            <input type="checkbox" id="typing-cb" onchange="toggleTyping(this.checked)">
+            <div class="tsl"></div>
+          </label>
+        </div>
+      </div>
+      <div id="admin-msgs" class="msgs" style="padding:22px 18px;"></div>
+      <div class="arply">
+        <div class="iwrap" style="flex:1;">
+          <textarea id="adm-inp" placeholder="Reply as AI&hellip;" rows="1"
+            onkeydown="admKey(event)" oninput="autoResizeEl(this)"></textarea>
+        </div>
+        <button class="sbtn" onclick="sendAdminReply()">
+          <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  // Hide config notice if Firebase is configured
+  const src = document.querySelector('script[type="module"]').textContent;
+  if (!src.includes('"YOUR_API_KEY"')) {
+    document.getElementById('cfg').style.display = 'none';
+  }
+<\/script>
+</body>
+</html>
