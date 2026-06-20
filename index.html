@@ -128,6 +128,38 @@
     onValue(ref(db, "sessions/" + visSess + "/typing"), snap => {
       document.getElementById("typing-bubble").style.display = snap.val() ? "block" : "none";
     });
+
+    // iOS/Android browsers can suspend the realtime connection when the
+    // tab is backgrounded (e.g. switching apps to screenshot). Re-fetch
+    // immediately whenever the page becomes visible again so nothing is missed.
+    if (!window._visResumeHooked) {
+      window._visResumeHooked = true;
+      document.addEventListener("visibilitychange", async () => {
+        if (document.visibilityState === "visible" && visSess) {
+          try {
+            const snap = await get(ref(db, "sessions/" + visSess + "/messages"));
+            const msgs = [];
+            snap.forEach(c => msgs.push({ ...c.val() }));
+            renderVisMsgs(msgs);
+          } catch (e) { /* ignore */ }
+        }
+      });
+    }
+
+    // Safety-net polling: re-fetch every 3s in case the live socket
+    // silently drops (some mobile browsers do this in background tabs).
+    if (!window._visPollHooked) {
+      window._visPollHooked = true;
+      setInterval(async () => {
+        if (!visSess) return;
+        try {
+          const snap = await get(ref(db, "sessions/" + visSess + "/messages"));
+          const msgs = [];
+          snap.forEach(c => msgs.push({ ...c.val() }));
+          renderVisMsgs(msgs);
+        } catch (e) { /* ignore */ }
+      }, 3000);
+    }
   }
 
   function renderVisMsgs(msgs) {
